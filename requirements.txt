@@ -7,3 +7,4 @@ langchain-community==0.2.7
 awscli==1.33.26
 xmltodict==0.13.0
 wikipedia==1.4.0
+arxiv==2.1.3

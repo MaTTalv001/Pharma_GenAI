@@ -11,6 +11,8 @@ from langchain.chains import LLMChain, ConversationalRetrievalChain
 from langchain_community.document_loaders import PubMedLoader
 from langchain_community.retrievers import WikipediaRetriever
 from langchain.chains import RetrievalQA
+from langchain_community.utilities import ArxivAPIWrapper
+import arxiv
 
 # AWS認証情報の設定（環境変数から読み込む）
 os.environ['AWS_ACCESS_KEY_ID'] = st.secrets["AWS_ACCESS_KEY_ID"]
@@ -23,7 +25,7 @@ def main():
     
     st.divider()
 
-    mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "PubMed検索・要約","wiki検索"])
+    mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "PubMed検索・要約", "wiki検索", "arxiv検索"])
     st.sidebar.warning("試作品につき、品質の保証はありません", icon="🚨")
 
     if mode == "研究モード":
@@ -34,6 +36,8 @@ def main():
         pubmed_search_mode()
     elif mode == "wiki検索":
         wiki_search_mode()
+    elif mode == "arxiv検索":
+        arxiv_search_mode()
 
 def research_mode():
     st.header("研究モード")
@@ -229,6 +233,103 @@ def wiki_search_mode():
                         st.write(f"URL: {source.metadata.get('source', '不明')}")
                         st.write("内容:")
                         st.write(source.page_content)
+
+def arxiv_search_mode():
+    st.header("arXiv検索・要約")
+    st.info("LLMでクエリを最適化し、関連論文をarXivから検索と要約（オプション）を行います", icon=None)
+
+    summarize = st.checkbox("LLMによる要約を行う(件数上限は少なくなります)", value=False)
+
+    llm = BedrockLLM(credentials_profile_name="default", model_id="anthropic.claude-v2:1")
+
+    query_optimization_prompt = PromptTemplate(
+        input_variables=["query"],
+        template="""以下の研究トピックについて、arXivでの検索に最適なクエリ(英語)を生成してください。
+        より確実に情報を拾えるようにクエリを拡張してほしい。そのままarXivの検索に用いるので、あなたの一言や解説は一切不要で、生成したクエリだけを返してほしい。
+        
+        正しい例：
+        研究トピック:LLMの比較
+        最適化されたクエリ:Comparative analysis of language models
+
+        正しい例：
+        研究トピック:LLMを用いたデータ分析
+        最適化されたクエリ:Data analysis using language models
+
+        研究トピック: {query}
+
+        最適化されたクエリ:"""
+    )
+
+    query_optimization_chain = LLMChain(llm=llm, prompt=query_optimization_prompt)
+
+    user_query = st.text_input("研究したいトピックを入力してください:")
+    max_docs = st.slider("検索する文献数", min_value=1, max_value=20 if not summarize else 5, value=5)
+
+    if st.button("検索" if not summarize else "検索・要約"):
+        with st.spinner('検索中...'):
+            optimized_query = query_optimization_chain.run(user_query).strip()
+            st.write(f"最適化されたクエリ: {optimized_query}")
+
+            # arxivライブラリを直接使用して検索
+            search = arxiv.Search(
+                query=optimized_query,
+                max_results=max_docs,
+                sort_by=arxiv.SortCriterion.Relevance
+            )
+
+            papers_data = []
+            for i, result in enumerate(search.results(), 1):
+                paper_data = {
+                    "Title": result.title,
+                    "Authors": ", ".join(author.name for author in result.authors),
+                    "Published": result.published.strftime("%Y-%m-%d"),
+                    "URL": result.entry_id,
+                    "Summary": result.summary,
+                    "Journal Ref": result.journal_ref,
+                    "DOI": result.doi,
+                }
+
+                st.subheader(f"論文 {i}")
+                st.write(f"タイトル: {paper_data['Title']}")
+                st.write(f"著者: {paper_data['Authors']}")
+                st.write(f"出版日: {paper_data['Published']}")
+                st.write(f"URL: {paper_data['URL']}")
+                if paper_data['Journal Ref']:
+                    st.write(f"ジャーナル参照: {paper_data['Journal Ref']}")
+                if paper_data['DOI']:
+                    st.write(f"DOI: {paper_data['DOI']}")
+                
+                with st.expander("要約"):
+                    st.write(paper_data['Summary'])
+
+                if summarize:
+                    with st.spinner(f'論文 {i} を要約中...'):
+                        summary_prompt = PromptTemplate(
+                            input_variables=["text"],
+                            template="以下の論文の要約を日本語で3文以内で作成してください：\n{text}\n要約："
+                        )
+                        summary_chain = LLMChain(llm=llm, prompt=summary_prompt)
+                        llm_summary = summary_chain.run(paper_data["Summary"]).strip()
+                        st.write("LLMによる要約:")
+                        st.write(llm_summary)
+                        paper_data["LLM要約"] = llm_summary
+
+                papers_data.append(paper_data)
+                st.divider()
+
+            # DataFrameの作成と表示
+            df = pd.DataFrame(papers_data)
+            st.subheader("検索結果一覧")
+            st.dataframe(df[["Title", "Authors", "Published", "URL"]])
+
+            # CSVファイルとしてダウンロード
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="検索結果をCSVでダウンロード",
+                data=csv,
+                file_name="arxiv_search_results.csv",
+                mime="text/csv",
+            )
 
 
 def generate_text(messages):
