@@ -7,8 +7,10 @@ import streamlit as st
 from botocore.exceptions import ClientError
 from langchain_aws import BedrockLLM
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain.chains import LLMChain, ConversationalRetrievalChain
 from langchain_community.document_loaders import PubMedLoader
+from langchain_community.retrievers import WikipediaRetriever
+from langchain.chains import RetrievalQA
 
 # AWS認証情報の設定（環境変数から読み込む）
 os.environ['AWS_ACCESS_KEY_ID'] = st.secrets["AWS_ACCESS_KEY_ID"]
@@ -21,16 +23,16 @@ def main():
     st.warning("試作品につき、品質の保証はありません", icon="🚨")
     st.divider()
 
-    mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "PubMed検索","PubMed検索・要約" ])
+    mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "PubMed検索・要約","wiki検索"])
 
     if mode == "研究モード":
         research_mode()
     elif mode == "シンプルチャット":
         simplechat_mode()
     elif mode == "PubMed検索・要約":
-        literature_search_mode()
-    elif mode == "PubMed検索":
         pubmed_search_mode()
+    elif mode == "wiki検索":
+        wiki_search_mode()
 
 def research_mode():
     st.header("研究モード")
@@ -74,13 +76,16 @@ def simplechat_mode():
                 st.markdown(response)
             st.session_state.dev_messages.append({"role": "assistant", "content": response})
 
-def pubmed_search_base(mode):
-    st.header("PubMed検索" if mode == "search" else "PubMed検索・要約")
-    if mode == "search":
+def pubmed_search_mode():
+    st.header("PubMed検索・要約")
+
+    summarize = st.checkbox("LLMによる要約を行う(件数上限は少なくなります)", value=False)
+    
+    if summarize:
         st.markdown("- LLMを用いてクエリを最適化します")
-    if mode == "summary":
+        st.markdown("- LLMを用いて各論文を要約します")
+    else:
         st.markdown("- LLMを用いてクエリを最適化します")
-        st.markdown("- LLMを用いて各論文を要約します(処理に時間がかかるため件数上限は少なくしています)")
 
     llm = BedrockLLM(credentials_profile_name="default", model_id="anthropic.claude-v2:1")
 
@@ -103,9 +108,9 @@ def pubmed_search_base(mode):
     query_optimization_chain = LLMChain(llm=llm, prompt=query_optimization_prompt)
 
     user_query = st.text_input("研究したい医学トピックを入力してください:")
-    max_docs = st.slider("検索する文献数", min_value=1, max_value=100 if mode == "search" else 10, value=50 if mode == "search" else 5)
+    max_docs = st.slider("検索する文献数", min_value=1, max_value=100 if not summarize else 10, value=50 if not summarize else 5)
 
-    if st.button("検索" if mode == "search" else "検索・要約"):
+    if st.button("検索" if not summarize else "検索・要約"):
         with st.spinner('検索中...'):
             optimized_query = query_optimization_chain.run(user_query).strip()
             optimized_query = optimized_query.split('\n')[-1].strip()
@@ -130,7 +135,7 @@ def pubmed_search_base(mode):
                     "概要": content[:500] + "..." if len(content) > 500 else content
                 }
 
-                if mode == "summary":
+                if summarize:
                     with st.spinner(f'文献 {i} を要約中...'):
                         summary_prompt = PromptTemplate(
                             input_variables=["text"],
@@ -141,7 +146,7 @@ def pubmed_search_base(mode):
 
                 results.append(result)
 
-                if mode == "summary":
+                if summarize:
                     st.subheader(f"文献 {i}")
                     st.write(f"タイトル: {result['タイトル']}")
                     st.write(f"出版日: {result['出版日']}")
@@ -169,7 +174,7 @@ def pubmed_search_base(mode):
                 mime="text/csv",
             )
 
-            if mode == "search":
+            if not summarize:
                 # 個別の論文詳細表示
                 st.subheader("論文詳細")
                 for i, result in enumerate(results, 1):
@@ -182,12 +187,43 @@ def pubmed_search_base(mode):
                             st.write(f"PMID: {result['PMID']}")
                         st.write("概要:")
                         st.write(result['概要'])
+def wiki_search_mode():
+    st.title("Wikipedia検索")
 
-def literature_search_mode():
-    pubmed_search_base("summary")
+    # 言語選択
+    lang = st.radio("言語を選択してください:", ["日本語", "英語"])
+    lang_code = "ja" if lang == "日本語" else "en"
 
-def pubmed_search_mode():
-    pubmed_search_base("search")
+    # BedrockLLMの設定
+    llm = BedrockLLM(model_id="anthropic.claude-v2:1")
+
+    # WikipediaRetrieverの設定
+    retriever = WikipediaRetriever(lang=lang_code, top_k_results=5)
+
+    # RetrievalQAの設定
+    qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
+
+    # 新しい質問の入力
+    query = st.text_input("質問を入力してください:")
+
+    if st.button("検索"):
+        if query:
+            with st.spinner('回答を生成中...'):
+                result = qa({"query": query})
+                answer = result['result']
+                sources = result['source_documents']
+
+                st.subheader("回答:")
+                st.write(answer)
+                
+                st.subheader("Wikipedia記事:")
+                for i, source in enumerate(sources, 1):
+                    with st.expander(f"記事 {i}: {source.metadata.get('title', '不明')}"):
+                        st.write(f"タイトル: {source.metadata.get('title', '不明')}")
+                        st.write(f"URL: {source.metadata.get('source', '不明')}")
+                        st.write("内容:")
+                        st.write(source.page_content)
+
 
 def generate_text(messages):
     client = boto3.client("bedrock-runtime", region_name="ap-northeast-1")

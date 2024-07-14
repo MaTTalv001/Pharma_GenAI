@@ -6,3 +6,4 @@ langchain-aws==0.1.11
 langchain-community==0.2.7
 awscli==1.33.26
 xmltodict==0.13.0
+wikipedia==1.4.0
