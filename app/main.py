@@ -20,10 +20,11 @@ os.environ['AWS_PROFILE'] = 'default'
 
 def main():
     st.title("生成AIプロトタイピングApp集")
-    st.warning("試作品につき、品質の保証はありません", icon="🚨")
+    
     st.divider()
 
     mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "PubMed検索・要約","wiki検索"])
+    st.sidebar.warning("試作品につき、品質の保証はありません", icon="🚨")
 
     if mode == "研究モード":
         research_mode()
@@ -36,6 +37,7 @@ def main():
 
 def research_mode():
     st.header("研究モード")
+    
     
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
@@ -57,6 +59,7 @@ def research_mode():
 
 def simplechat_mode():
     st.header("シンプルチャット")
+    st.info("通常のチャットモードです。LLMの事前学習内容を参照して回答されます。", icon=None)
     
     if "dev_messages" not in st.session_state:
         st.session_state.dev_messages = []
@@ -78,14 +81,15 @@ def simplechat_mode():
 
 def pubmed_search_mode():
     st.header("PubMed検索・要約")
+    st.info("LLMでクエリを最適化し、関連記事をPubMedから検索と要約（オプション）を行います", icon=None)
 
     summarize = st.checkbox("LLMによる要約を行う(件数上限は少なくなります)", value=False)
     
-    if summarize:
-        st.markdown("- LLMを用いてクエリを最適化します")
-        st.markdown("- LLMを用いて各論文を要約します")
-    else:
-        st.markdown("- LLMを用いてクエリを最適化します")
+    # if summarize:
+    #     st.markdown("- LLMを用いてクエリを最適化します")
+    #     st.markdown("- LLMを用いて各論文を要約します")
+    # else:
+    #     st.markdown("- LLMを用いてクエリを最適化します")
 
     llm = BedrockLLM(credentials_profile_name="default", model_id="anthropic.claude-v2:1")
 
@@ -188,7 +192,9 @@ def pubmed_search_mode():
                         st.write("概要:")
                         st.write(result['概要'])
 def wiki_search_mode():
+    
     st.title("Wikipedia検索")
+    st.info("Wikipediaから関連記事を検索して回答を返します", icon=None)
 
     # 言語選択
     lang = st.radio("言語を選択してください:", ["日本語", "英語"])
