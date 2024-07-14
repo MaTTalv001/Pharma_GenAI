@@ -15,10 +15,10 @@ from langchain_community.utilities import ArxivAPIWrapper
 import arxiv
 
 # AWS認証情報の設定（環境変数から読み込む）
-os.environ['AWS_ACCESS_KEY_ID'] = st.secrets["AWS_ACCESS_KEY_ID"]
-os.environ['AWS_SECRET_ACCESS_KEY'] = st.secrets["AWS_SECRET_ACCESS_KEY"]
-os.environ['AWS_DEFAULT_REGION'] = st.secrets["AWS_DEFAULT_REGION"]
-os.environ['AWS_PROFILE'] = 'default'
+os.environ['AWS_ACCESS_KEY_ID'] = st.secrets["aws_credentials"]["AWS_ACCESS_KEY_ID"]
+os.environ['AWS_SECRET_ACCESS_KEY'] = st.secrets["aws_credentials"]["AWS_SECRET_ACCESS_KEY"]
+os.environ['AWS_DEFAULT_REGION'] = st.secrets["aws_credentials"]["AWS_DEFAULT_REGION"]
+# os.environ['AWS_PROFILE'] = 'default'
 
 def main():
     st.title("生成AIプロトタイピングApp集")
@@ -333,7 +333,11 @@ def arxiv_search_mode():
 
 
 def generate_text(messages):
-    client = boto3.client("bedrock-runtime", region_name="ap-northeast-1")
+    client = boto3.client(
+        "bedrock-runtime",
+        aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+        aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+        region_name=os.environ['AWS_DEFAULT_REGION'])
     model_id = "anthropic.claude-v2:1"
 
     # メッセージ履歴を適切な形式に変換
