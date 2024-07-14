@@ -1,4 +1,5 @@
 import os
+import pandas as pd
 import time
 import boto3
 import json
@@ -20,14 +21,16 @@ def main():
     st.warning("試作品につき、品質の保証はありません", icon="🚨")
     st.divider()
 
-    mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "文献検索・要約モード"])
+    mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "PubMed検索","PubMed検索・要約" ])
 
     if mode == "研究モード":
         research_mode()
     elif mode == "シンプルチャット":
         simplechat_mode()
-    elif mode == "文献検索・要約モード":
+    elif mode == "PubMed検索・要約":
         literature_search_mode()
+    elif mode == "PubMed検索":
+        pubmed_search_mode()
 
 def research_mode():
     st.header("研究モード")
@@ -71,14 +74,19 @@ def simplechat_mode():
                 st.markdown(response)
             st.session_state.dev_messages.append({"role": "assistant", "content": response})
 
-def literature_search_mode():
-    st.header("文献検索・要約モード")
+def pubmed_search_base(mode):
+    st.header("PubMed検索" if mode == "search" else "PubMed検索・要約")
+    if mode == "search":
+        st.markdown("- LLMを用いてクエリを最適化します")
+    if mode == "summary":
+        st.markdown("- LLMを用いてクエリを最適化します")
+        st.markdown("- LLMを用いて各論文を要約します(処理に時間がかかるため件数上限は少なくしています)")
 
     llm = BedrockLLM(credentials_profile_name="default", model_id="anthropic.claude-v2:1")
 
     query_optimization_prompt = PromptTemplate(
         input_variables=["query"],
-        template="""Pubmedで次のクエリで検索したいのですが、より確実に情報を拾えるようにクエリを拡張してほしい。そのままpubmedの検索に用いるので、あなたの一言や解説は一切不要で、生成したクエリだけを返してほしい。
+        template="""Pubmedで次のクエリで検索したいのですが、より確実に情報を拾えるようにクエリを拡張してほしい。そのままpubmedの検索に用いるので、あなたの一言や解説は一切不要で、生成したクエリだけを返してほしい。そのままpubmedの検索に用いるので、「最適化されたクエリ:」などの余計な文言は一切不要です。
 
 良い例
 クエリ: COVID-19の家族内伝播
@@ -94,41 +102,92 @@ def literature_search_mode():
 
     query_optimization_chain = LLMChain(llm=llm, prompt=query_optimization_prompt)
 
-    summary_prompt = PromptTemplate(
-        input_variables=["text"],
-        template="以下の医学論文の要約を100単語以内で作成してください：\n{text}\n要約："
-    )
-
-    summary_chain = LLMChain(llm=llm, prompt=summary_prompt)
-
     user_query = st.text_input("研究したい医学トピックを入力してください:")
-    max_docs = st.slider("検索する文献数", min_value=1, max_value=10, value=5)
+    max_docs = st.slider("検索する文献数", min_value=1, max_value=100 if mode == "search" else 10, value=50 if mode == "search" else 5)
 
-    if st.button("検索・要約"):
+    if st.button("検索" if mode == "search" else "検索・要約"):
         with st.spinner('検索中...'):
             optimized_query = query_optimization_chain.run(user_query).strip()
+            optimized_query = optimized_query.split('\n')[-1].strip()
             st.write(f"最適化されたクエリ: {optimized_query}")
 
             loader = PubMedLoader(query=optimized_query, load_max_docs=max_docs)
             docs = loader.load()
 
+            results = []
             for i, doc in enumerate(docs, 1):
                 metadata = doc.metadata
                 content = doc.page_content
 
-                with st.spinner(f'文献 {i} を要約中...'):
-                    llm_summary = summary_chain.run(content).strip()
+                pmid = metadata.get('uid', '不明')
+                pubmed_url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid != '不明' else ''
 
-                st.subheader(f"文献 {i}")
-                st.write(f"タイトル: {metadata.get('Title', '不明')}")
-                st.write(f"著者: {metadata.get('Authors', '不明')}")
-                st.write(f"出版日: {metadata.get('Published', '不明')}")
-                st.write(f"PMID: {metadata.get('uid', '不明')}")
-                with st.expander("概要"):
-                    st.write(content[:500] + "..." if len(content) > 500 else content)
-                st.write("LLMによる要約:")
-                st.write(llm_summary)
-                st.divider()
+                result = {
+                    "タイトル": metadata.get('Title', '不明'),
+                    "出版日": metadata.get('Published', '不明'),
+                    "PMID": pmid,
+                    "PubMed URL": pubmed_url,
+                    "概要": content[:500] + "..." if len(content) > 500 else content
+                }
+
+                if mode == "summary":
+                    with st.spinner(f'文献 {i} を要約中...'):
+                        summary_prompt = PromptTemplate(
+                            input_variables=["text"],
+                            template="以下の医学論文の要約を日本語で3文以内で作成してください：\n{text}\n要約："
+                        )
+                        summary_chain = LLMChain(llm=llm, prompt=summary_prompt)
+                        result["LLMによる要約"] = summary_chain.run(content).strip()
+
+                results.append(result)
+
+                if mode == "summary":
+                    st.subheader(f"文献 {i}")
+                    st.write(f"タイトル: {result['タイトル']}")
+                    st.write(f"出版日: {result['出版日']}")
+                    if pubmed_url:
+                        st.markdown(f"PMID: [{pmid}]({pubmed_url})")
+                    else:
+                        st.write("PMID: 不明")
+                    with st.expander("概要"):
+                        st.write(result['概要'])
+                    st.write("LLMによる要約:")
+                    st.write(result['LLMによる要約'])
+                    st.divider()
+
+            # DataFrameの作成と表示
+            df = pd.DataFrame(results)
+            st.subheader("検索結果一覧")
+            st.dataframe(df[["タイトル", "出版日", "PMID", "PubMed URL"]])
+
+            # CSVファイルとしてダウンロード
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="検索結果をCSVでダウンロード",
+                data=csv,
+                file_name="pubmed_search_results.csv",
+                mime="text/csv",
+            )
+
+            if mode == "search":
+                # 個別の論文詳細表示
+                st.subheader("論文詳細")
+                for i, result in enumerate(results, 1):
+                    with st.expander(f"論文 {i}: {result['タイトル']}"):
+                        st.write(f"タイトル: {result['タイトル']}")
+                        st.write(f"出版日: {result['出版日']}")
+                        if result['PubMed URL']:
+                            st.markdown(f"PMID: [{result['PMID']}]({result['PubMed URL']})")
+                        else:
+                            st.write(f"PMID: {result['PMID']}")
+                        st.write("概要:")
+                        st.write(result['概要'])
+
+def literature_search_mode():
+    pubmed_search_base("summary")
+
+def pubmed_search_mode():
+    pubmed_search_base("search")
 
 def generate_text(messages):
     client = boto3.client("bedrock-runtime", region_name="ap-northeast-1")
