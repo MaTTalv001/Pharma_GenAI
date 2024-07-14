@@ -11,18 +11,27 @@ from langchain.chains import LLMChain, ConversationalRetrievalChain
 from langchain_community.document_loaders import PubMedLoader
 from langchain_community.retrievers import WikipediaRetriever
 from langchain.chains import RetrievalQA
-from langchain_community.utilities import ArxivAPIWrapper
 import arxiv
 
-# AWS認証情報の設定（環境変数から読み込む）
-os.environ['AWS_ACCESS_KEY_ID'] = st.secrets["aws_credentials"]["AWS_ACCESS_KEY_ID"]
-os.environ['AWS_SECRET_ACCESS_KEY'] = st.secrets["aws_credentials"]["AWS_SECRET_ACCESS_KEY"]
-os.environ['AWS_DEFAULT_REGION'] = st.secrets["aws_credentials"]["AWS_DEFAULT_REGION"]
-# os.environ['AWS_PROFILE'] = 'default'
+# AWS認証情報の設定
+if 'aws_credentials' in st.secrets:
+    os.environ['AWS_ACCESS_KEY_ID'] = st.secrets["aws_credentials"]["AWS_ACCESS_KEY_ID"]
+    os.environ['AWS_SECRET_ACCESS_KEY'] = st.secrets["aws_credentials"]["AWS_SECRET_ACCESS_KEY"]
+    os.environ['AWS_DEFAULT_REGION'] = st.secrets["aws_credentials"]["AWS_DEFAULT_REGION"]
+else:
+    # ローカル環境用のフォールバック
+    os.environ['AWS_ACCESS_KEY_ID'] = 'your_access_key_id'
+    os.environ['AWS_SECRET_ACCESS_KEY'] = 'your_secret_access_key'
+    os.environ['AWS_DEFAULT_REGION'] = 'your_region'
+
+def get_llm():
+    return BedrockLLM(
+        model_id="anthropic.claude-v2:1",
+        region_name=os.environ['AWS_DEFAULT_REGION']
+    )
 
 def main():
     st.title("生成AIプロトタイピングApp集")
-    
     st.divider()
 
     mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "PubMed検索・要約", "wiki検索", "arxiv検索"])
@@ -41,7 +50,6 @@ def main():
 
 def research_mode():
     st.header("研究モード")
-    
     
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
@@ -89,13 +97,7 @@ def pubmed_search_mode():
 
     summarize = st.checkbox("LLMによる要約を行う(件数上限は少なくなります)", value=False)
     
-    # if summarize:
-    #     st.markdown("- LLMを用いてクエリを最適化します")
-    #     st.markdown("- LLMを用いて各論文を要約します")
-    # else:
-    #     st.markdown("- LLMを用いてクエリを最適化します")
-
-    llm = BedrockLLM(credentials_profile_name="default", model_id="anthropic.claude-v2:1")
+    llm = get_llm()
 
     query_optimization_prompt = PromptTemplate(
         input_variables=["query"],
@@ -168,12 +170,10 @@ def pubmed_search_mode():
                     st.write(result['LLMによる要約'])
                     st.divider()
 
-            # DataFrameの作成と表示
             df = pd.DataFrame(results)
             st.subheader("検索結果一覧")
             st.dataframe(df[["タイトル", "出版日", "PMID", "PubMed URL"]])
 
-            # CSVファイルとしてダウンロード
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="検索結果をCSVでダウンロード",
@@ -183,7 +183,6 @@ def pubmed_search_mode():
             )
 
             if not summarize:
-                # 個別の論文詳細表示
                 st.subheader("論文詳細")
                 for i, result in enumerate(results, 1):
                     with st.expander(f"論文 {i}: {result['タイトル']}"):
@@ -195,25 +194,18 @@ def pubmed_search_mode():
                             st.write(f"PMID: {result['PMID']}")
                         st.write("概要:")
                         st.write(result['概要'])
+
 def wiki_search_mode():
-    
     st.title("Wikipedia検索")
     st.info("Wikipediaから関連記事を検索して回答を返します", icon=None)
 
-    # 言語選択
     lang = st.radio("言語を選択してください:", ["日本語", "英語"])
     lang_code = "ja" if lang == "日本語" else "en"
 
-    # BedrockLLMの設定
-    llm = BedrockLLM(model_id="anthropic.claude-v2:1")
-
-    # WikipediaRetrieverの設定
+    llm = get_llm()
     retriever = WikipediaRetriever(lang=lang_code, top_k_results=5)
-
-    # RetrievalQAの設定
     qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
 
-    # 新しい質問の入力
     query = st.text_input("質問を入力してください:")
 
     if st.button("検索"):
@@ -240,7 +232,7 @@ def arxiv_search_mode():
 
     summarize = st.checkbox("LLMによる要約を行う(件数上限は少なくなります)", value=False)
 
-    llm = BedrockLLM(credentials_profile_name="default", model_id="anthropic.claude-v2:1")
+    llm = get_llm()
 
     query_optimization_prompt = PromptTemplate(
         input_variables=["query"],
@@ -270,7 +262,6 @@ def arxiv_search_mode():
             optimized_query = query_optimization_chain.run(user_query).strip()
             st.write(f"最適化されたクエリ: {optimized_query}")
 
-            # arxivライブラリを直接使用して検索
             search = arxiv.Search(
                 query=optimized_query,
                 max_results=max_docs,
@@ -331,13 +322,11 @@ def arxiv_search_mode():
                 mime="text/csv",
             )
 
-
 def generate_text(messages):
     client = boto3.client(
         "bedrock-runtime",
-        aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
-        aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
-        region_name=os.environ['AWS_DEFAULT_REGION'])
+        region_name=os.environ['AWS_DEFAULT_REGION']
+    )
     model_id = "anthropic.claude-v2:1"
 
     # メッセージ履歴を適切な形式に変換
