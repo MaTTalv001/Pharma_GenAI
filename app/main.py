@@ -8,16 +8,17 @@ from botocore.exceptions import ClientError
 def main():
     st.title("生成AIプロトタイピングApp集")
     st.warning("試作品につき、品質の保証はありません", icon="🚨")
+    st.divider()
 
-    mode = st.sidebar.radio("ユースケース", ["チャットモード", "開発モード"])
+    mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット"])
 
-    if mode == "チャットモード":
-        chat_mode()
-    elif mode == "開発モード":
-        development_mode()
+    if mode == "研究モード":
+        research_mode()
+    elif mode == "シンプルチャット":
+        simplechat_mode()
 
-def chat_mode():
-    st.header("チャットモード")
+def research_mode():
+    st.header("研究モード")
     
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
@@ -37,8 +38,8 @@ def chat_mode():
                 st.markdown(response)
             st.session_state.chat_messages.append({"role": "assistant", "content": response})
 
-def development_mode():
-    st.header("開発モード")
+def simplechat_mode():
+    st.header("シンプルチャット")
     
     if "dev_messages" not in st.session_state:
         st.session_state.dev_messages = []
@@ -47,7 +48,7 @@ def development_mode():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    prompt = st.chat_input("開発に関する質問を入力してください")
+    prompt = st.chat_input("質問を入力してください")
     if prompt:
         st.chat_message("user").markdown(prompt)
         st.session_state.dev_messages.append({"role": "user", "content": prompt})
