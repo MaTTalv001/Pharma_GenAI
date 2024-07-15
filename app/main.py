@@ -9,6 +9,7 @@ import feedparser
 from bs4 import BeautifulSoup
 from io import BytesIO
 import arxiv
+import wikipedia
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -216,28 +217,49 @@ def wiki_search_mode():
     lang_code = "ja" if lang == "日本語" else "en"
 
     llm = get_llm()
-    retriever = WikipediaRetriever(lang=lang_code, top_k_results=5)
-    qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
-
+    retriever = WikipediaRetriever(lang=lang_code, top_k_results=1)
+    
     query = st.text_input("質問を入力してください:")
-
+    
     if st.button("検索"):
         if query:
             with st.spinner('回答を生成中...'):
-                result = qa({"query": query})
-                answer = result['result']
-                sources = result['source_documents']
+                # Step 1: 適切な検索キーワードの生成
+                keyword_prompt = PromptTemplate(
+                    input_variables=["query"],
+                    template="以下の質問に対して、最も適切なWikipedia検索キーワードを1つだけ提案してください。「Microsoftの歴史について知りたい」なら「Microsoft」です。「タイタニックの監督は誰だっけ」なら「タイタニック」です。「からかい上手の高木さんの登場人物を知りたい」なら「からかい上手の高木さん」です。「標準正規分布について教えて」なら「正規分布」です。キーワードのみを出力し、説明は不要です。\n\n質問: {query}\n\nキーワード:"
+                )
+                keyword_chain = LLMChain(llm=llm, prompt=keyword_prompt)
+                search_keyword = keyword_chain.run(query).strip()
 
-                st.subheader("回答:")
-                st.write(answer)
-                
-                st.subheader("Wikipedia記事:")
-                for i, source in enumerate(sources, 1):
-                    with st.expander(f"記事 {i}: {source.metadata.get('title', '不明')}"):
-                        st.write(f"タイトル: {source.metadata.get('title', '不明')}")
-                        st.write(f"URL: {source.metadata.get('source', '不明')}")
-                        st.write("内容:")
-                        st.write(source.page_content)
+                st.write(f"検索キーワード: {search_keyword}")
+
+                # Step 2: 生成されたキーワードでWikipedia検索
+                docs = retriever.get_relevant_documents(search_keyword)
+
+                if docs:
+                    # Step 3: 検索結果を使用して元の質問に回答
+                    answer_prompt = PromptTemplate(
+                        input_variables=["query", "context"],
+                        template="以下の情報を使用して、質問に答えてください。\n\n質問: {query}\n\n情報:\n{context}\n\n回答:"
+                    )
+                    answer_chain = LLMChain(llm=llm, prompt=answer_prompt)
+                    
+                    context = "\n\n".join([doc.page_content for doc in docs])
+                    result = answer_chain.run(query=query, context=context)
+
+                    st.subheader("回答:")
+                    st.write(result)
+                    
+                    st.subheader("Wikipedia記事:")
+                    for i, doc in enumerate(docs, 1):
+                        with st.expander(f"記事 {i}: {doc.metadata.get('title', '不明')}"):
+                            st.write(f"タイトル: {doc.metadata.get('title', '不明')}")
+                            st.write(f"URL: {doc.metadata.get('source', '不明')}")
+                            st.write("内容:")
+                            st.write(doc.page_content)
+                else:
+                    st.write("関連する情報が見つかりませんでした。")
 
 def arxiv_search_mode():
     st.header("arXiv検索・要約")
