@@ -26,13 +26,13 @@ from langchain.embeddings import BedrockEmbeddings
 from langchain.schema import Document
 
 
-# AWS認証情報の設定
+# AWS認証情報の設定(app/.streamlit/secrets.tomlに設定)
 if 'aws_credentials' in st.secrets:
     os.environ['AWS_ACCESS_KEY_ID'] = st.secrets["aws_credentials"]["AWS_ACCESS_KEY_ID"]
     os.environ['AWS_SECRET_ACCESS_KEY'] = st.secrets["aws_credentials"]["AWS_SECRET_ACCESS_KEY"]
     os.environ['AWS_DEFAULT_REGION'] = st.secrets["aws_credentials"]["AWS_DEFAULT_REGION"]
 else:
-    # ローカル環境用のフォールバック
+    # ローカル環境用のフォールバック(aws configureを使う場合にエラーにならないように初期値設定)
     os.environ['AWS_ACCESS_KEY_ID'] = 'your_access_key_id'
     os.environ['AWS_SECRET_ACCESS_KEY'] = 'your_secret_access_key'
     os.environ['AWS_DEFAULT_REGION'] = 'your_region'
@@ -269,7 +269,7 @@ def wiki_search_mode():
                 st.session_state.vectorstore = vectorstore
 
                 # Step 4: 類似度検索用のリトリーバー作成
-                similar_retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+                similar_retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
 
                 # Step 5: RetrievalQAチェーンの作成と実行
                 qa_chain = RetrievalQA.from_chain_type(llm, retriever=similar_retriever)
@@ -285,7 +285,7 @@ def wiki_search_mode():
                         st.write(f"タイトル: {doc.metadata.get('title', '不明')}")
                         st.write(f"URL: {doc.metadata.get('source', '不明')}")
                         st.write("内容（最初の500文字）:")
-                        st.write(doc.page_content[:500] + "...")
+                        st.write(doc.page_content[:1000] + "...")
 
     # 追加の質問セクション
     if st.session_state.vectorstore is not None:
@@ -293,7 +293,7 @@ def wiki_search_mode():
         additional_query = st.text_input("追加の質問を入力してください:")
         if st.button("追加の質問を送信") and additional_query:
             with st.spinner('追加の回答を生成中...'):
-                similar_retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 3})
+                similar_retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 10})
                 qa_chain = RetrievalQA.from_chain_type(llm, retriever=similar_retriever)
                 additional_answer = qa_chain.run(additional_query)
                 st.subheader("追加の回答:")
