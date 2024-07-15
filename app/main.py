@@ -1,9 +1,17 @@
 import os
 import pandas as pd
+import numpy as np
 import time
 import boto3
 import json
+import requests
+import feedparser
+from bs4 import BeautifulSoup
+from io import BytesIO
+import arxiv
 import streamlit as st
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 from botocore.exceptions import ClientError
 from langchain_aws import BedrockLLM
 from langchain.prompts import PromptTemplate
@@ -11,7 +19,7 @@ from langchain.chains import LLMChain, ConversationalRetrievalChain
 from langchain_community.document_loaders import PubMedLoader
 from langchain_community.retrievers import WikipediaRetriever
 from langchain.chains import RetrievalQA
-import arxiv
+
 
 # AWS認証情報の設定
 if 'aws_credentials' in st.secrets:
@@ -34,7 +42,7 @@ def main():
     st.title("生成AIプロトタイピングApp集")
     st.divider()
 
-    mode = st.sidebar.radio("ユースケース", ["研究モード", "シンプルチャット", "企画相談","PubMed検索・要約", "Wikipedia検索", "arxiv検索"])
+    mode = st.sidebar.radio("ユースケース", ["シンプルチャット", "企画相談","PubMed検索・要約", "Wikipedia検索", "arxiv検索", "ニュース取得"])
     st.sidebar.warning("試作品につき、品質の保証はありません", icon="🚨")
 
     if mode == "研究モード":
@@ -49,6 +57,8 @@ def main():
         arxiv_search_mode()
     elif mode == "企画相談":
         idea_consultation_mode()
+    elif mode == "ニュース取得":
+        news_feed_mode()
 
 def research_mode():
     st.header("研究モード")
@@ -471,6 +481,115 @@ def generate_idea_response(messages):
     except ClientError as e:
         print(f"An error occurred: {e}")
         return "エラーが発生しました。もう一度お試しください。"
+    
+def news_feed_mode():
+    st.header("ニュース取得")
+    st.info("複数のRSSフィードからニュース記事を取得します。オプションで自社戦略との関連性を計算できます。", icon="📰")
+
+    company_strategy = "日本の製薬企業で低分子創薬に強みを持っている。感染症や中枢神経系の疾患に積極的に取り組んでいる。今後の成長に向け、AI活用を含むデジタルトランスレーション(DX)や海外事業展開に積極的である"
+
+    calculate_similarity = st.checkbox("AIで自社戦略との関連性を計算する（処理時間が長くなります）", value=False)
+
+    if st.button("ニュース取得"):
+        with st.spinner('ニュースを取得中...'):
+            # RSSフィードのURLリスト
+            rss_urls = [
+                'https://business.nikkei.com/rss/sns/nb.rdf',
+                'https://business.nikkei.com/rss/sns/nb-x.rdf',
+                'https://business.nikkei.com/rss/sns/nb-plus.rdf',
+                'https://xtech.nikkei.com/rss/xtech-it.rdf',
+                'https://xtech.nikkei.com/rss/xtech-mono.rdf',
+                'https://xtech.nikkei.com/rss/xtech-hlth.rdf',
+                'https://xtech.nikkei.com/rss/index.rdf',
+                'https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml'
+            ]
+
+            news_articles = []
+
+            def clean_html(html_content):
+                soup = BeautifulSoup(html_content, 'html.parser')
+                return soup.get_text().strip()
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+
+            for url in rss_urls:
+                try:
+                    response = requests.get(url, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    feed = feedparser.parse(BytesIO(response.content))
+                    
+                    if feed.entries:
+                        for entry in feed.entries:
+                            article = {
+                                'title': entry.get('title', ''),
+                                'link': entry.get('link', ''),
+                                'published': entry.get('published', '') or entry.get('updated', '')
+                            }
+                            
+                            if 'summary' in entry:
+                                article['summary'] = clean_html(entry.summary)
+                            elif 'description' in entry:
+                                article['summary'] = clean_html(entry.description)
+                            elif 'content' in entry:
+                                article['summary'] = clean_html(entry.content[0].value)
+                            else:
+                                article['summary'] = ''
+                            
+                            news_articles.append(article)
+                
+                except Exception as e:
+                    st.error(f"Error processing {url}: {str(e)}")
+
+            if calculate_similarity:
+                with st.spinner('関連性を計算中...'):
+                    # 埋め込みモデルの読み込み
+                    model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
+                    # 自社戦略の埋め込み
+                    strategy_embedding = model.encode([company_strategy])[0]
+
+                    # 各ニュース記事の類似度計算
+                    for article in news_articles:
+                        article_text = article['title'] + " " + article['summary']
+                        article_embedding = model.encode([article_text])[0]
+                        similarity = cosine_similarity([strategy_embedding], [article_embedding])[0][0]
+                        article['similarity_score'] = similarity
+
+                    # データフレームの作成と類似度でのソート
+                    df = pd.DataFrame(news_articles)
+                    df = df.sort_values('similarity_score', ascending=False)
+                    st.subheader("取得したニュース一覧（自社戦略との関連性順）")
+            else:
+                # 類似度計算なしの場合
+                df = pd.DataFrame(news_articles)
+                st.subheader("取得したニュース一覧")
+
+            st.dataframe(df)
+
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="ニュース一覧をCSVでダウンロード",
+                data=csv,
+                file_name="news_articles.csv",
+                mime="text/csv",
+            )
+
+            st.subheader("ニュース詳細10件")
+            for i, article in enumerate(df[0:10].to_dict('records')):
+                title = f"ニュース {i+1}: {article['title']}"
+                if calculate_similarity:
+                    title += f" (関連性スコア: {article['similarity_score']:.4f})"
+                
+                with st.expander(title):
+                    st.write(f"タイトル: {article['title']}")
+                    st.write(f"公開日: {article['published']}")
+                    st.write(f"リンク: {article['link']}")
+                    st.write("要約:")
+                    st.write(article['summary'])
+                    if calculate_similarity:
+                        st.write(f"関連性スコア: {article['similarity_score']:.4f}")
 
 def generate_text(messages):
     client = boto3.client(
