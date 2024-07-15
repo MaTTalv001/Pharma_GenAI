@@ -20,6 +20,10 @@ from langchain.chains import LLMChain, ConversationalRetrievalChain
 from langchain_community.document_loaders import PubMedLoader
 from langchain_community.retrievers import WikipediaRetriever
 from langchain.chains import RetrievalQA
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.vectorstores import FAISS
+from langchain.embeddings import BedrockEmbeddings
+from langchain.schema import Document
 
 
 # AWS認証情報の設定
@@ -211,13 +215,24 @@ def pubmed_search_mode():
 
 def wiki_search_mode():
     st.header("Wikipedia検索")
-    st.info("Wikipediaから関連記事を検索して回答を返します", icon=None)
+    st.info("Wikipediaから関連記事を検索して回答を返します。候補記事をベクトル化する過程で少々時間がかかります", icon=None)
+
+    # セッション状態の初期化
+    if 'vectorstore' not in st.session_state:
+        st.session_state.vectorstore = None
+    if 'search_words' not in st.session_state:
+        st.session_state.search_words = []
 
     lang = st.radio("言語を選択してください:", ["日本語", "英語"])
     lang_code = "ja" if lang == "日本語" else "en"
 
     llm = get_llm()
-    retriever = WikipediaRetriever(lang=lang_code, top_k_results=1)
+    embeddings = BedrockEmbeddings()
+    retriever = WikipediaRetriever(lang=lang_code, top_k_results=3)
+
+    # テキスト分割器の設定
+    text_splitter = CharacterTextSplitter(chunk_size=2400, chunk_overlap=200)
+
     
     query = st.text_input("質問を入力してください:")
     
@@ -227,39 +242,62 @@ def wiki_search_mode():
                 # Step 1: 適切な検索キーワードの生成
                 keyword_prompt = PromptTemplate(
                     input_variables=["query"],
-                    template="以下の質問に対して、最も適切なWikipedia検索キーワードを1つだけ提案してください。「Microsoftの歴史について知りたい」なら「Microsoft」です。「タイタニックの監督は誰だっけ」なら「タイタニック」です。「からかい上手の高木さんの登場人物を知りたい」なら「からかい上手の高木さん」です。「標準正規分布について教えて」なら「正規分布」です。キーワードのみを出力し、説明は不要です。\n\n質問: {query}\n\nキーワード:"
+                    template="以下の質問に対して、最も適切なWikipedia検索キーワードを3つ提案してください。カンマ区切りで出力してください。\n\n質問: {query}\n\n検索キーワード:"
                 )
                 keyword_chain = LLMChain(llm=llm, prompt=keyword_prompt)
-                search_keyword = keyword_chain.run(query).strip()
+                search_keywords = keyword_chain.run(query).strip().split(',')
+                st.session_state.search_words = search_keywords
 
-                st.write(f"検索キーワード: {search_keyword}")
+                st.write(f"検索キーワード: {', '.join(search_keywords)}")
 
                 # Step 2: 生成されたキーワードでWikipedia検索
-                docs = retriever.get_relevant_documents(search_keyword)
+                docs = []
+                for keyword in search_keywords:
+                    new_docs = retriever.get_relevant_documents(keyword.strip())
+                    # 各記事の最初の部分のみを使用
+                    docs.extend([Document(page_content=doc.page_content, metadata=doc.metadata) for doc in new_docs])
 
-                if docs:
-                    # Step 3: 検索結果を使用して元の質問に回答
-                    answer_prompt = PromptTemplate(
-                        input_variables=["query", "context"],
-                        template="以下の情報を使用して、質問に答えてください。\n\n質問: {query}\n\n情報:\n{context}\n\n回答:"
-                    )
-                    answer_chain = LLMChain(llm=llm, prompt=answer_prompt)
-                    
-                    context = "\n\n".join([doc.page_content for doc in docs])
-                    result = answer_chain.run(query=query, context=context)
+                # Step 3: テキストの分割とベクトルストアの作成
+                chunks = text_splitter.split_documents(docs)
+                # チャンク数を制限
+                max_chunks = 2400
+                if len(chunks) > max_chunks:
+                    chunks = chunks[:max_chunks]
+                    st.warning(f"記事が長いため、最初の{max_chunks}チャンクのみを使用します。")
 
-                    st.subheader("回答:")
-                    st.write(result)
-                    
-                    st.subheader("Wikipedia記事:")
-                    for i, doc in enumerate(docs, 1):
-                        with st.expander(f"記事 {i}: {doc.metadata.get('title', '不明')}"):
-                            st.write(f"タイトル: {doc.metadata.get('title', '不明')}")
-                            st.write(f"URL: {doc.metadata.get('source', '不明')}")
-                            st.write("内容:")
-                            st.write(doc.page_content)
-                else:
-                    st.write("関連する情報が見つかりませんでした。")
+                vectorstore = FAISS.from_documents(chunks, embeddings)
+                st.session_state.vectorstore = vectorstore
+
+                # Step 4: 類似度検索用のリトリーバー作成
+                similar_retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+                # Step 5: RetrievalQAチェーンの作成と実行
+                qa_chain = RetrievalQA.from_chain_type(llm, retriever=similar_retriever)
+                result = qa_chain.run(query)
+
+                st.subheader("回答:")
+                st.write(result)
+
+                # 関連Wikipedia記事の表示を最適化
+                st.subheader("関連Wikipedia記事:")
+                for i, doc in enumerate(docs, 1):
+                    with st.expander(f"記事 {i}: {doc.metadata.get('title', '不明')}"):
+                        st.write(f"タイトル: {doc.metadata.get('title', '不明')}")
+                        st.write(f"URL: {doc.metadata.get('source', '不明')}")
+                        st.write("内容（最初の500文字）:")
+                        st.write(doc.page_content[:500] + "...")
+
+    # 追加の質問セクション
+    if st.session_state.vectorstore is not None:
+        st.subheader("追加の質問")
+        additional_query = st.text_input("追加の質問を入力してください:")
+        if st.button("追加の質問を送信") and additional_query:
+            with st.spinner('追加の回答を生成中...'):
+                similar_retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 3})
+                qa_chain = RetrievalQA.from_chain_type(llm, retriever=similar_retriever)
+                additional_answer = qa_chain.run(additional_query)
+                st.subheader("追加の回答:")
+                st.write(additional_answer)
 
 def arxiv_search_mode():
     st.header("arXiv検索・要約")
